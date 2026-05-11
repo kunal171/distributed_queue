@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {

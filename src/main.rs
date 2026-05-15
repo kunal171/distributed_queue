@@ -1,46 +1,29 @@
 mod message;
 mod broker;
 mod protocol;
+mod producer;
+mod consumer;
+
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use broker::Broker;
+use std::env;
 
 #[tokio::main]
 async fn main() {
-    // Create a shared broker instance
-    let broker = Arc::new(Mutex::new(Broker::new()));
+   let args: Vec<String> = env::args().collect();
 
-    // Spawn a producer task
-    let producer_broker = broker.clone();
-    // The producer will publish messages to the broker
-    let producer = tokio::spawn(async move {
-        for i in 0..5 {
-            let mut b = producer_broker.lock().await;
-            b.publish(format!("task-{}", i));
-            drop(b);
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+   let role = args.get(1).map(|s| s.as_str()).unwrap_or("broker");
+   let addr = "127.0.0.1:8080";
+
+    match role {
+        "broker" => broker::run_broker(addr).await,
+        "producer" => {
+            let messages: Vec<String> = (0..5).map(|i| format!("task-{}", i)).collect();
+            producer::run_producer(addr, messages).await;
         }
-    });
-
-    // Spawn a consumer task
-    let consumer_broker = broker.clone();
-    let consumer = tokio::spawn(async move {
-        loop {
-            let mut b = consumer_broker.lock().await;
-            if let Some(msg) = b.consume() {
-                println!("[consumer] got message {}: {}", msg.id, msg.payload);
-                drop(b);
-            } else {
-                drop(b);
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            }
-        }
-    });
-
-    // Wait for the producer to finish
-    producer.await.unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    consumer.abort();
-    println!("[main] done");
+        "consumer" => consumer::run_consumer(addr).await,
+        _ => eprintln!("Usage: distributed_queue [broker|producer|consumer]"),
+    }
 }

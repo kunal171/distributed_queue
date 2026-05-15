@@ -38,7 +38,7 @@ impl Broker {
     }
 }
 
-async fn run_broker(addr: &str) {
+pub async fn run_broker(addr: &str) {
     let listener = TcpListener::bind(addr).await.expect("failed to Bind");
     println!("[broker] listening on {}", addr);
 

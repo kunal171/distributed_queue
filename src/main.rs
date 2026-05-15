@@ -3,11 +3,6 @@ mod broker;
 mod protocol;
 mod producer;
 mod consumer;
-
-
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use broker::Broker;
 use std::env;
 
 #[tokio::main]

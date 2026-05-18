@@ -24,15 +24,42 @@ Producer(s) ──TCP──→ Broker ──TCP──→ Consumer(s)
 
 ## Current State
 
-Project just initialized. Planning milestones.
+Milestones 1–2 complete. In-memory queue and TCP networking working.
+
+Remaining: Milestone 3 (ACKs and retry), Milestone 4 (multiple consumers, graceful shutdown, tests).
+
+## Project Structure
+
+```text
+src/
+├── main.rs       — CLI dispatch: broker, producer, or consumer
+├── broker.rs     — Broker struct, TCP listener, connection handling
+├── producer.rs   — TCP client that registers and publishes messages
+├── consumer.rs   — TCP client that registers and receives messages
+├── message.rs    — Message, ClientMessage, ServerMessage types
+└── protocol.rs   — Length-prefixed framing (read_frame, write_frame)
+```
+
+## Implemented So Far
+
+- `Message` struct with id, payload, timestamp
+- `ClientMessage` enum: Register, Publish (sent by clients to broker)
+- `ServerMessage` enum: Message, Ok (sent by broker to clients)
+- Length-prefixed JSON wire protocol (`protocol.rs`)
+- Broker with in-memory `VecDeque<Message>` queue
+- TCP listener with per-connection `tokio::spawn`
+- Registration handshake: first frame identifies client as producer or consumer
+- Producer: connects, registers, publishes messages, waits for Ok
+- Consumer: connects, registers, receives messages in a loop
+- Single binary with CLI args: `cargo run -- broker|producer|consumer`
 
 ## Milestone Plan
 
-### Milestone 1: In-Memory Queue + Local Producer/Consumer
+### Milestone 1: In-Memory Queue + Local Producer/Consumer — done
 
 Message struct, in-memory queue, producer and consumer as async tasks in one process.
 
-### Milestone 2: TCP Networking
+### Milestone 2: TCP Networking — done
 
 Broker listens on TCP. Producers and consumers connect as separate processes. JSON wire protocol.
 
@@ -44,20 +71,32 @@ Consumer ACKs, broker tracks in-flight messages, timeout-based requeue, at-least
 
 Round-robin dispatch, graceful shutdown, integration tests.
 
-## Planned Concepts
+## Concepts Practiced
 
 - TCP networking with Tokio (`TcpListener`, `TcpStream`)
-- Wire protocols (framing, JSON serialization over TCP)
-- Fault tolerance (ack/nack, retry, timeouts)
-- At-least-once delivery semantics
-- Graceful shutdown (`tokio::signal`, draining in-flight work)
-- Multi-client connection handling
-- CAP theorem trade-offs in practice
+- Wire protocols (length-prefixed JSON framing)
+- `tokio::sync::Mutex` for async-safe shared state
+- `Arc` for sharing broker across spawned tasks
+- `#[serde(tag = "type")]` for internally-tagged JSON enums
+- Per-connection task spawning with `tokio::spawn`
+- CLI arg dispatch for multi-role binary
+
+## Usage
+
+```bash
+# Terminal 1: start broker
+cargo run -- broker
+
+# Terminal 2: start consumer
+cargo run -- consumer
+
+# Terminal 3: send messages
+cargo run -- producer
+```
 
 ## Useful Commands
 
 ```bash
-cargo run
 cargo check
 cargo test
 cargo fmt --check

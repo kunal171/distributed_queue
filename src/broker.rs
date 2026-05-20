@@ -1,12 +1,14 @@
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tokio::net::{ TcpListener, TcpStream};
 use crate::message::{Message, ClientMessage, ServerMessage};
 use crate::protocol::{write_frame, read_frame};
 
 pub struct Broker {
     queue: VecDeque<Message>,
+    in_flight: HashMap<u64, (Message, Instant)>,
     next_id: u64,
 
 }
@@ -15,6 +17,7 @@ impl Broker {
     pub fn new() -> Self {
         Broker {
             queue: VecDeque::new(),
+            in_flight: HashMap::new(),
             next_id: 1,
         }
     }
@@ -35,6 +38,14 @@ impl Broker {
     pub fn len(&self) -> usize {
         self.queue.len()
     }
+
+    pub fn ack (&mut self, id: u64)  {
+        if self.in_flight.remove(&id).is_some() {
+            println!("[broker] acknowledged message {}", id);
+        }
+    }
+
+    
 }
 
 pub async fn run_broker(addr: &str) {

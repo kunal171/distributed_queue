@@ -32,7 +32,12 @@ impl Broker {
     }
 
     pub fn consume(&mut self) -> Option<Message> {
-        self.queue.pop_front()
+        if let Some(msg) = self.queue.pop_front() {
+            self.in_flight.insert(msg.id, (msg.clone(), Instant::now()));
+            Some(msg)
+        } else {
+            None
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -45,6 +50,21 @@ impl Broker {
         }
     }
 
+    pub fn requeue_expired(&mut self, timeout: std::time::Duration) {
+        let now = Instant::now();
+        let expired: Vec<u64> = self.in_flight
+            .iter()
+            .filter(|(_,(_,sent_at))| now.duration_since(*sent_at) > timeout)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in expired {
+            if let Some((msg, _)) = self.in_flight.remove(&id) {
+                println!("[broker] requeuing expired message {}", id);
+                self.queue.push_front(msg);
+            }
+        }
+    }
     
 }
 

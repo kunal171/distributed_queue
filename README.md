@@ -24,9 +24,9 @@ Producer(s) ──TCP──→ Broker ──TCP──→ Consumer(s)
 
 ## Current State
 
-Milestones 1–2 complete. In-memory queue and TCP networking working.
+Milestones 1–2 complete. Milestone 3 in progress (ACK types and in-flight tracking done, wiring pending).
 
-Remaining: Milestone 3 (ACKs and retry), Milestone 4 (multiple consumers, graceful shutdown, tests).
+Remaining: Milestone 3 steps 3–6 (split stream, consumer ACKs, sweep task), Milestone 4 (multiple consumers, graceful shutdown, tests).
 
 ## Project Structure
 

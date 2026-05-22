@@ -52,6 +52,10 @@ src/
 - Producer: connects, registers, publishes messages, waits for Ok
 - Consumer: connects, registers, receives messages in a loop
 - Single binary with CLI args: `cargo run -- broker|producer|consumer`
+- `ClientMessage::Ack` variant for consumer acknowledgments
+- `Broker.in_flight: HashMap<u64, (Message, Instant)>` for tracking sent-but-unacked messages
+- `broker.ack(id)` removes from in-flight, `broker.requeue_expired(timeout)` requeues timed-out messages
+- `consume()` moves messages to in-flight set instead of forgetting them
 
 ## Milestone Plan
 

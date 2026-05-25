@@ -1,12 +1,14 @@
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tokio::net::{ TcpListener, TcpStream};
 use crate::message::{Message, ClientMessage, ServerMessage};
 use crate::protocol::{write_frame, read_frame};
 
 pub struct Broker {
     queue: VecDeque<Message>,
+    in_flight: HashMap<u64, (Message, Instant)>,
     next_id: u64,
 
 }
@@ -15,6 +17,7 @@ impl Broker {
     pub fn new() -> Self {
         Broker {
             queue: VecDeque::new(),
+            in_flight: HashMap::new(),
             next_id: 1,
         }
     }
@@ -29,12 +32,40 @@ impl Broker {
     }
 
     pub fn consume(&mut self) -> Option<Message> {
-        self.queue.pop_front()
+        if let Some(msg) = self.queue.pop_front() {
+            self.in_flight.insert(msg.id, (msg.clone(), Instant::now()));
+            Some(msg)
+        } else {
+            None
+        }
     }
 
     pub fn len(&self) -> usize {
         self.queue.len()
     }
+
+    pub fn ack (&mut self, id: u64)  {
+        if self.in_flight.remove(&id).is_some() {
+            println!("[broker] acknowledged message {}", id);
+        }
+    }
+
+    pub fn requeue_expired(&mut self, timeout: std::time::Duration) {
+        let now = Instant::now();
+        let expired: Vec<u64> = self.in_flight
+            .iter()
+            .filter(|(_,(_,sent_at))| now.duration_since(*sent_at) > timeout)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in expired {
+            if let Some((msg, _)) = self.in_flight.remove(&id) {
+                println!("[broker] requeuing expired message {}", id);
+                self.queue.push_front(msg);
+            }
+        }
+    }
+    
 }
 
 pub async fn run_broker(addr: &str) {

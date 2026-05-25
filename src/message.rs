@@ -15,6 +15,8 @@ pub enum ClientMessage {
     Register { role: String },
     #[serde(rename = "publish")]
     Publish { payload: String },
+    #[serde(rename = "ack")]
+    Ack { id: u64 },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,6 +26,8 @@ pub enum ServerMessage {
     Message { id: u64, payload: String },
     #[serde(rename = "ok")]
     Ok,
+    #[serde(rename = "error")]
+    Error { message: String },
 }
 
 impl Message {

@@ -24,9 +24,9 @@ Producer(s) ──TCP──→ Broker ──TCP──→ Consumer(s)
 
 ## Current State
 
-Milestones 1–2 complete. In-memory queue and TCP networking working.
+Milestones 1–2 complete. Milestone 3 in progress (ACK types and in-flight tracking done, wiring pending).
 
-Remaining: Milestone 3 (ACKs and retry), Milestone 4 (multiple consumers, graceful shutdown, tests).
+Remaining: Milestone 3 steps 3–6 (split stream, consumer ACKs, sweep task), Milestone 4 (multiple consumers, graceful shutdown, tests).
 
 ## Project Structure
 
@@ -52,6 +52,10 @@ src/
 - Producer: connects, registers, publishes messages, waits for Ok
 - Consumer: connects, registers, receives messages in a loop
 - Single binary with CLI args: `cargo run -- broker|producer|consumer`
+- `ClientMessage::Ack` variant for consumer acknowledgments
+- `Broker.in_flight: HashMap<u64, (Message, Instant)>` for tracking sent-but-unacked messages
+- `broker.ack(id)` removes from in-flight, `broker.requeue_expired(timeout)` requeues timed-out messages
+- `consume()` moves messages to in-flight set instead of forgetting them
 
 ## Milestone Plan
 

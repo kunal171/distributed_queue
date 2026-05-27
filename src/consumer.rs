@@ -14,6 +14,10 @@ pub async fn run_consumer(addr: &str) {
     while let Ok(Some(frame)) = read_frame(&mut stream).await {
         if let Ok(ServerMessage::Message { id, payload }) = serde_json::from_slice(&frame) {
             println!("[consumer] received message {}: {}", id, payload);
+
+            let ack = serde_json::to_vec(&ClientMessage::Ack { id }).unwrap();
+            write_frame(&mut stream, &ack).await.unwrap();
+            println!("[consumer] acknowledged message {}", id);
         }
     }
 

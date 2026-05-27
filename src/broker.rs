@@ -69,11 +69,23 @@ impl Broker {
     
 }
 
+// Main loop for the broker that listens for incoming connections and spawns tasks to handle producers and consumers
 pub async fn run_broker(addr: &str) {
     let listener = TcpListener::bind(addr).await.expect("failed to Bind");
     println!("[broker] listening on {}", addr);
 
     let broker = Arc::new(Mutex::new(Broker::new()));
+
+    let sweep_broker = broker.clone();
+    tokio::spawn(async move {
+        let timeout = std::time::Duration::from_secs(5);
+        loop {
+            tokio::time::sleep(timeout).await;
+            let mut b = sweep_broker.lock().await;
+            b.requeue_expired(timeout);
+        }
+    });
+
 
     loop {
         let (stream, peer) = listener.accept().await.expect("accept failed");

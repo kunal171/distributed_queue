@@ -1,9 +1,10 @@
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+// use tokio::net::TcpStream;
+// use tokio::io::{ReadHalf, WriteHalf};
 
 
 // write a frame to the stream, which consists of a 4-byte big-endian length followed by the data
-pub async fn write_frame(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
+pub async fn write_frame<W: AsyncWrite + Unpin>(stream: &mut W, data: &[u8]) -> std::io::Result<()> {
     // Write the length of the data as a 4-byte big-endian integer, followed by the data itself
     let len = data.len() as u32;
     stream.write_all(&len.to_be_bytes()).await?;
@@ -13,7 +14,7 @@ pub async fn write_frame(stream: &mut TcpStream, data: &[u8]) -> std::io::Result
 }
 
 // read a frame from the stream, which consists of a 4-byte big-endian length followed by the data
-pub async fn read_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
+pub async fn read_frame<R: AsyncRead + Unpin>(stream: &mut R) -> std::io::Result<Option<Vec<u8>>> {
     // Read the length of the incoming frame (4 bytes)
     let mut len_buf = [0u8; 4];
     if stream.read_exact(&mut len_buf).await.is_err() {

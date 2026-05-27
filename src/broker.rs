@@ -3,9 +3,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tokio::net::{ TcpListener, TcpStream};
+use crate::message::ServerMessage::Ok;
 use crate::message::{Message, ClientMessage, ServerMessage};
 use crate::protocol::{write_frame, read_frame};
 
+// A simple in-memory broker that manages a queue of messages and tracks in-flight messages for acknowledgment and requeuing
 pub struct Broker {
     queue: VecDeque<Message>,
     in_flight: HashMap<u64, (Message, Instant)>,
@@ -128,7 +130,19 @@ async fn handle_producer(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
 }
 
 async fn handle_consumer(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
-     loop {
+    let (mut reader, mut writer) = tokio::io::split(stream);
+
+    let ack_broker = broker.clone();
+    let ack_task = tokio::spawn(async move {
+        while let Ok(Some(frame)) = read_frame(& mut reader).await {
+            if let Ok(ClientMessage::Ack { id }) = serde_json::from_slice(&frame) {
+                let mut b = ack_broker.lock().await;
+                b.ack(id);
+            }
+        }
+    });
+    
+    loop {
         let msg = {
             let mut b = broker.lock().await;
             b.consume()
@@ -139,11 +153,15 @@ async fn handle_consumer(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
                 id: msg.id,
                 payload: msg.payload,
             }).unwrap();
-            if write_frame(&mut stream, &resp).await.is_err() {
+            if write_frame(&mut writer, &resp).await.is_err() {
                 break;
             }
         } else {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+
+        if ack_task.is_finished() {
+            break;
         }
     }
 }

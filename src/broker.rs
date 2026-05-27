@@ -1,17 +1,33 @@
+//! Broker — the central message queue server.
+//!
+//! Listens for TCP connections from producers and consumers. Producers push
+//! messages into an in-memory queue; consumers receive them with at-least-once
+//! delivery guaranteed by ACK tracking and timeout-based requeue.
+
 use std::collections::{VecDeque, HashMap};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
-use tokio::net::{ TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream};
 use crate::message::{Message, ClientMessage, ServerMessage};
 use crate::protocol::{write_frame, read_frame};
 
-// A simple in-memory broker that manages a queue of messages and tracks in-flight messages for acknowledgment and requeuing
+/// In-memory message broker with at-least-once delivery.
+///
+/// Messages flow through two stages:
+/// 1. `queue` — waiting to be sent to a consumer
+/// 2. `in_flight` — sent but not yet acknowledged (tracked with a timestamp)
+///
+/// If an in-flight message isn't ACKed within the timeout, the sweep task
+/// moves it back to the front of the queue for redelivery.
 pub struct Broker {
+    /// FIFO queue of messages waiting to be consumed.
     queue: VecDeque<Message>,
+    /// Messages sent to consumers but not yet acknowledged.
+    /// Key: message id, Value: (message, time it was sent).
     in_flight: HashMap<u64, (Message, Instant)>,
+    /// Auto-incrementing counter for assigning unique message ids.
     next_id: u64,
-
 }
 
 impl Broker {
@@ -23,7 +39,8 @@ impl Broker {
         }
     }
 
-    pub fn publish(&mut self, payload:String) -> u64 {
+    /// Enqueues a new message with the given payload. Returns the assigned id.
+    pub fn publish(&mut self, payload: String) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let message = Message::new(id, payload);
@@ -32,6 +49,10 @@ impl Broker {
         id
     }
 
+    /// Pops the next message from the queue and moves it to in-flight.
+    ///
+    /// The message stays in-flight until the consumer ACKs it or the sweep
+    /// task requeues it after a timeout.
     pub fn consume(&mut self) -> Option<Message> {
         if let Some(msg) = self.queue.pop_front() {
             self.in_flight.insert(msg.id, (msg.clone(), Instant::now()));
@@ -41,41 +62,48 @@ impl Broker {
         }
     }
 
+    /// Returns the number of messages waiting in the queue.
     pub fn len(&self) -> usize {
         self.queue.len()
     }
 
-    pub fn ack (&mut self, id: u64)  {
+    /// Removes a message from in-flight after the consumer confirms processing.
+    pub fn ack(&mut self, id: u64) {
         if self.in_flight.remove(&id).is_some() {
             println!("[broker] acknowledged message {}", id);
         }
     }
 
+    /// Moves any in-flight messages that have exceeded the timeout back to the queue.
+    ///
+    /// This is the core of at-least-once delivery: if a consumer dies before
+    /// ACKing, the message will be redelivered to another consumer.
     pub fn requeue_expired(&mut self, timeout: std::time::Duration) {
         let now = Instant::now();
         let expired: Vec<u64> = self.in_flight
             .iter()
-            .filter(|(_,(_,sent_at))| now.duration_since(*sent_at) > timeout)
+            .filter(|(_, (_, sent_at))| now.duration_since(*sent_at) > timeout)
             .map(|(id, _)| *id)
             .collect();
 
         for id in expired {
             if let Some((msg, _)) = self.in_flight.remove(&id) {
                 println!("[broker] requeuing expired message {}", id);
+                // Push to front so expired messages get retried before new ones
                 self.queue.push_front(msg);
             }
         }
     }
-    
 }
 
-// Main loop for the broker that listens for incoming connections and spawns tasks to handle producers and consumers
+/// Starts the broker: binds to `addr`, spawns a sweep task, and accepts connections.
 pub async fn run_broker(addr: &str) {
-    let listener = TcpListener::bind(addr).await.expect("failed to Bind");
+    let listener = TcpListener::bind(addr).await.expect("failed to bind");
     println!("[broker] listening on {}", addr);
 
     let broker = Arc::new(Mutex::new(Broker::new()));
 
+    // Sweep task — periodically checks for unacknowledged messages and requeues them
     let sweep_broker = broker.clone();
     tokio::spawn(async move {
         let timeout = std::time::Duration::from_secs(5);
@@ -86,7 +114,7 @@ pub async fn run_broker(addr: &str) {
         }
     });
 
-
+    // Accept loop — each connection gets its own spawned task
     loop {
         let (stream, peer) = listener.accept().await.expect("accept failed");
         println!("[broker] connection from {}", peer);
@@ -98,9 +126,10 @@ pub async fn run_broker(addr: &str) {
     }
 }
 
+/// Reads the first frame to determine if this client is a producer or consumer,
+/// then delegates to the appropriate handler.
 async fn handle_connection(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
-    // Implementation for handling individual connections
-     let Some(first_frame) = read_frame(&mut stream).await.unwrap_or(None) else {
+    let Some(first_frame) = read_frame(&mut stream).await.unwrap_or(None) else {
         return;
     };
 
@@ -108,8 +137,7 @@ async fn handle_connection(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
         return;
     };
 
-    // Handle the initial registration message to determine if this is a producer or consumer
-     match msg {
+    match msg {
         ClientMessage::Register { role } if role == "producer" => {
             println!("[broker] producer registered");
             handle_producer(stream, broker).await;
@@ -124,11 +152,13 @@ async fn handle_connection(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
     }
 }
 
+/// Handles a producer connection: reads Publish messages and enqueues them.
 async fn handle_producer(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
     while let Ok(Some(frame)) = read_frame(&mut stream).await {
         if let Ok(ClientMessage::Publish { payload }) = serde_json::from_slice(&frame) {
             let mut b = broker.lock().await;
             b.publish(payload);
+            // Drop the lock before writing to the network to avoid holding it during I/O
             drop(b);
 
             let resp = serde_json::to_vec(&ServerMessage::Ok).unwrap();
@@ -140,19 +170,29 @@ async fn handle_producer(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
     println!("[broker] producer disconnected");
 }
 
-async fn handle_consumer(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
+/// Handles a consumer connection with bidirectional communication.
+///
+/// The TCP stream is split into read and write halves so that:
+/// - The main loop sends messages to the consumer via the write half
+/// - A spawned task listens for ACKs on the read half concurrently
+///
+/// This avoids deadlock: the broker can send messages while simultaneously
+/// receiving ACKs without blocking either direction.
+async fn handle_consumer(stream: TcpStream, broker: Arc<Mutex<Broker>>) {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
+    // Spawn a task to listen for ACKs from the consumer
     let ack_broker = broker.clone();
     let ack_task = tokio::spawn(async move {
-        while let Ok(Some(frame)) = read_frame(& mut reader).await {
+        while let Ok(Some(frame)) = read_frame(&mut reader).await {
             if let Ok(ClientMessage::Ack { id }) = serde_json::from_slice(&frame) {
                 let mut b = ack_broker.lock().await;
                 b.ack(id);
             }
         }
     });
-    
+
+    // Main loop: pull messages from the queue and send them to the consumer
     loop {
         let msg = {
             let mut b = broker.lock().await;
@@ -168,9 +208,11 @@ async fn handle_consumer(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
                 break;
             }
         } else {
+            // No messages available — poll again shortly
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
 
+        // If the ACK reader task finished, the consumer disconnected
         if ack_task.is_finished() {
             break;
         }

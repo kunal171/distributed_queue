@@ -1,3 +1,8 @@
+//! Distributed Queue — a TCP message broker with at-least-once delivery.
+//!
+//! Single binary that runs as broker, producer, or consumer based on CLI args.
+//! Usage: `cargo run -- broker|producer|consumer`
+
 mod message;
 mod broker;
 mod protocol;
@@ -7,10 +12,11 @@ use std::env;
 
 #[tokio::main]
 async fn main() {
-   let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = env::args().collect();
 
-   let role = args.get(1).map(|s| s.as_str()).unwrap_or("broker");
-   let addr = "127.0.0.1:8080";
+    // Default to broker if no role argument is provided
+    let role = args.get(1).map(|s| s.as_str()).unwrap_or("broker");
+    let addr = "127.0.0.1:8080";
 
     match role {
         "broker" => broker::run_broker(addr).await,

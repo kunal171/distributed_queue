@@ -6,7 +6,7 @@
 
 use std::collections::{VecDeque, HashMap};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::Instant;
 use tokio::net::{TcpListener, TcpStream};
 use crate::message::{Message, ClientMessage, ServerMessage};
@@ -28,6 +28,11 @@ pub struct Broker {
     in_flight: HashMap<u64, (Message, Instant)>,
     /// Auto-incrementing counter for assigning unique message ids.
     next_id: u64,
+    /// List of connected consumers (for future enhancements like push-based delivery).
+    consumers: Vec<mpsc::Sender<Message>>,
+    // Round-robin index for distributing messages to consumers (if we implement push-based delivery).
+    next_consumer: usize,
+    
 }
 
 impl Broker {
@@ -36,6 +41,8 @@ impl Broker {
             queue: VecDeque::new(),
             in_flight: HashMap::new(),
             next_id: 1,
+            consumers: Vec::new(),
+            next_consumer: 0,
         }
     }
 
@@ -93,6 +100,16 @@ impl Broker {
                 self.queue.push_front(msg);
             }
         }
+    }
+
+    pub fn add_consumer(&mut self) -> mpsc::Receiver<Message> {
+        let (tx, rx) = mpsc::channel(32);
+        self.consumers.push(tx);
+        rx
+    }
+
+    pub fn remove_consumer(&mut self) {
+        self.consumers.retain(|tx| !tx.is_closed());
     }
 }
 

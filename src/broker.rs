@@ -108,8 +108,43 @@ impl Broker {
         rx
     }
 
-    pub fn remove_consumer(&mut self) {
+    pub fn remove_dead_consumer(&mut self) {
         self.consumers.retain(|tx| !tx.is_closed());
+    }
+
+    pub async fn dispatch_one(&mut self) -> bool {
+        // If we have no consumers or no messages, we can't dispatch anything
+        if self.consumers.is_empty() || self.queue.is_empty()  {
+            return false;
+        }
+
+        // Clean up any dead consumers before trying to dispatch
+        self.remove_dead_consumer();
+        if self.consumers.is_empty() {
+            return false;
+        }
+
+        let msg = match self.queue.pop_front() {
+            Some(msg) => msg,
+            None => return false,
+        };
+
+        let count = self.consumers.len();
+
+        for _ in 0..count {
+            let idx = self.next_consumer % self.consumers.len();
+            self.next_consumer =  idx + 1;
+
+            if self.consumers[idx].send(msg.clone()).await.is_ok() {
+                // Track in-flight — same as before
+                self.in_flight.insert(msg.id, (msg, Instant::now()));
+                return true;
+            }
+        }
+
+        // All consumers dead — put message back
+        self.queue.push_front(msg);
+        false
     }
 }
 

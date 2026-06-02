@@ -108,6 +108,11 @@ impl Broker {
         rx
     }
 
+    /// Returns the number of messages currently in-flight (sent but not yet ACKed).
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight.len()
+    }
+
     pub fn remove_dead_consumer(&mut self) {
         self.consumers.retain(|tx| !tx.is_closed());
     }
@@ -182,15 +187,49 @@ pub async fn run_broker(addr: &str) {
         }
     });
 
-    // Accept loop — each connection gets its own spawned task
-    loop {
-        let (stream, peer) = listener.accept().await.expect("accept failed");
-        println!("[broker] connection from {}", peer);
+    // Accept loop — races against Ctrl+C shutdown signal
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
 
-        let broker = broker.clone();
-        tokio::spawn(async move {
-            handle_connection(stream, broker).await;
-        });
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, peer) = result.expect("accept failed");
+                println!("[broker] connection from {}", peer);
+
+                let broker = broker.clone();
+                tokio::spawn(async move {
+                    handle_connection(stream, broker).await;
+                });
+            }
+            _ = &mut shutdown => {
+                println!("[broker] shutting down...");
+                break;
+            }
+        }
+    }
+
+    // Drain: wait for in-flight messages to be ACKed before exiting
+    let drain_timeout = std::time::Duration::from_secs(10);
+    let start = Instant::now();
+    loop {
+        let remaining = {
+            let b = broker.lock().await;
+            b.in_flight_count()
+        };
+
+        if remaining == 0 {
+            println!("[broker] all messages acknowledged, exiting");
+            break;
+        }
+
+        if Instant::now().duration_since(start) > drain_timeout {
+            println!("[broker] shutdown timeout, {} messages still in-flight", remaining);
+            break;
+        }
+
+        println!("[broker] waiting for {} in-flight messages...", remaining);
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
 }
 

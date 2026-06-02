@@ -56,24 +56,6 @@ impl Broker {
         id
     }
 
-    /// Pops the next message from the queue and moves it to in-flight.
-    ///
-    /// The message stays in-flight until the consumer ACKs it or the sweep
-    /// task requeues it after a timeout.
-    pub fn consume(&mut self) -> Option<Message> {
-        if let Some(msg) = self.queue.pop_front() {
-            self.in_flight.insert(msg.id, (msg.clone(), Instant::now()));
-            Some(msg)
-        } else {
-            None
-        }
-    }
-
-    /// Returns the number of messages waiting in the queue.
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
-
     /// Removes a message from in-flight after the consumer confirms processing.
     pub fn ack(&mut self, id: u64) {
         if self.in_flight.remove(&id).is_some() {
@@ -156,6 +138,13 @@ impl Broker {
 /// Starts the broker: binds to `addr`, spawns a sweep task, and accepts connections.
 pub async fn run_broker(addr: &str) {
     let listener = TcpListener::bind(addr).await.expect("failed to bind");
+    run_broker_on(listener).await;
+}
+
+/// Runs the broker on an already-bound listener.
+/// Useful for tests that bind to port 0 to get a random available port.
+pub async fn run_broker_on(listener: TcpListener) {
+    let addr = listener.local_addr().unwrap();
     println!("[broker] listening on {}", addr);
 
     let broker = Arc::new(Mutex::new(Broker::new()));

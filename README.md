@@ -3,14 +3,14 @@
 A message broker built in Rust with TCP networking, supporting multiple producers
 and consumers with at-least-once delivery guarantees.
 
-## What It Will Do
+## What It Does
 
-- Accept messages from producers over TCP
-- Store messages in an in-memory queue
-- Dispatch messages to consumers with round-robin distribution
-- Track acknowledgments and requeue unacknowledged messages
-- Handle consumer failures gracefully with timeouts
-- Support graceful shutdown with in-flight message draining
+- Accepts messages from producers over TCP
+- Stores messages in an in-memory queue
+- Dispatches messages to consumers with round-robin distribution
+- Tracks acknowledgments and requeues unacknowledged messages after timeout
+- Handles consumer failures gracefully with timeout-based requeue
+- Supports graceful shutdown with in-flight message draining (Ctrl+C)
 
 ## Architecture
 
@@ -18,78 +18,49 @@ and consumers with at-least-once delivery guarantees.
 Producer(s) ──TCP──→ Broker ──TCP──→ Consumer(s)
                        │
                  In-memory queue
+                 + round-robin dispatch
                  + ack tracking
                  + timeout requeue
+                 + graceful shutdown
 ```
-
-## Current State
-
-Milestones 1–3 complete. In-memory queue, TCP networking, and ACK-based at-least-once delivery all working.
-
-Remaining: Milestone 4 (multiple consumers, graceful shutdown, integration tests).
 
 ## Project Structure
 
 ```text
 src/
 ├── main.rs       — CLI dispatch: broker, producer, or consumer
-├── broker.rs     — Broker struct, TCP listener, connection handling
+├── lib.rs        — Public module re-exports for integration tests
+├── broker.rs     — Broker struct, dispatch loop, sweep task, connection handling
 ├── producer.rs   — TCP client that registers and publishes messages
-├── consumer.rs   — TCP client that registers and receives messages
+├── consumer.rs   — TCP client that registers, receives messages, and sends ACKs
 ├── message.rs    — Message, ClientMessage, ServerMessage types
 └── protocol.rs   — Length-prefixed framing (read_frame, write_frame)
+tests/
+└── integration.rs — 5 integration tests covering the full message flow
 ```
 
-## Implemented So Far
+## Wire Protocol
 
-- `Message` struct with id, payload, timestamp
-- `ClientMessage` enum: Register, Publish, Ack (sent by clients to broker)
-- `ServerMessage` enum: Message, Ok, Error (sent by broker to clients)
-- Length-prefixed JSON wire protocol (`protocol.rs`), generic over `AsyncRead`/`AsyncWrite`
-- Broker with in-memory `VecDeque<Message>` queue
-- TCP listener with per-connection `tokio::spawn`
-- Registration handshake: first frame identifies client as producer or consumer
-- Producer: connects, registers, publishes messages, waits for Ok
-- Consumer: connects, registers, receives messages, sends ACKs
-- Single binary with CLI args: `cargo run -- broker|producer|consumer`
-- In-flight tracking: `HashMap<u64, (Message, Instant)>` for sent-but-unacked messages
-- `ack(id)` removes from in-flight, `requeue_expired(timeout)` requeues timed-out messages
-- `consume()` moves messages to in-flight set instead of forgetting them
-- Bidirectional consumer stream: `tokio::io::split` with concurrent ACK reader task
-- Periodic sweep task requeues unacknowledged messages after 5-second timeout
+Length-prefixed JSON frames over TCP: `[4-byte big-endian length][JSON payload]`.
 
-## Milestone Plan
+Client-to-broker messages (`ClientMessage`):
+- `Register { role }` — first frame, identifies client as producer or consumer
+- `Publish { payload }` — producer enqueues a message
+- `Ack { id }` — consumer confirms processing of a message
 
-### Milestone 1: In-Memory Queue + Local Producer/Consumer — done
+Broker-to-client messages (`ServerMessage`):
+- `Message { id, payload }` — delivers a message to a consumer
+- `Ok` — success response (e.g. after publish)
+- `Error { message }` — error response
 
-Message struct, in-memory queue, producer and consumer as async tasks in one process.
+## Delivery Guarantees
 
-### Milestone 2: TCP Networking — done
+**At-least-once delivery**: every message is delivered at least once.
 
-Broker listens on TCP. Producers and consumers connect as separate processes. JSON wire protocol.
-
-### Milestone 3: Acknowledgments and Retry — done
-
-Consumer ACKs, broker tracks in-flight messages, timeout-based requeue, at-least-once delivery.
-
-### Milestone 4: Multiple Consumers and Polish
-
-Round-robin dispatch, graceful shutdown, integration tests.
-
-## Concepts Practiced
-
-- TCP networking with Tokio (`TcpListener`, `TcpStream`)
-- Wire protocols (length-prefixed JSON framing)
-- `tokio::sync::Mutex` for async-safe shared state
-- `Arc` for sharing broker across spawned tasks
-- `#[serde(tag = "type")]` for internally-tagged JSON enums
-- Per-connection task spawning with `tokio::spawn`
-- CLI arg dispatch for multi-role binary
-- ACK-based at-least-once delivery semantics
-- In-flight message tracking with timeout-based requeue
-- `tokio::io::split` for bidirectional stream communication
-- Concurrent task coordination (ACK reader + message sender)
-- Periodic background tasks (sweep task for expired messages)
+1. Broker sends a message to a consumer and moves it to an in-flight set
+2. Consumer sends an ACK after processing — broker removes from in-flight
+3. If no ACK arrives within 5 seconds, the sweep task requeues the message
+4. Requeued messages go to the front of the queue for priority retry
 
 ## Usage
 
@@ -97,14 +68,38 @@ Round-robin dispatch, graceful shutdown, integration tests.
 # Terminal 1: start broker
 cargo run -- broker
 
-# Terminal 2: start consumer
+# Terminal 2: start consumer (connect before producer to see messages)
 cargo run -- consumer
 
 # Terminal 3: send messages
 cargo run -- producer
 ```
 
-## Useful Commands
+Multiple consumers can connect simultaneously — messages are distributed via round-robin.
+
+## Tests
+
+```bash
+cargo test
+```
+
+5 integration tests:
+- `test_publish_and_consume` — basic end-to-end delivery and ACK
+- `test_producer_gets_ok` — producer receives Ok for each publish
+- `test_round_robin_two_consumers` — 4 messages split across 2 consumers
+- `test_messages_queued_before_consumer` — messages wait in queue until a consumer connects
+- `test_multiple_producers_single_consumer` — 2 producers, 1 consumer, all messages delivered
+
+## Dependencies
+
+```toml
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+```
+
+## Commands
 
 ```bash
 cargo check

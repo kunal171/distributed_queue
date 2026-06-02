@@ -224,14 +224,17 @@ async fn handle_producer(mut stream: TcpStream, broker: Arc<Mutex<Broker>>) {
 
 /// Handles a consumer connection with bidirectional communication.
 ///
-/// The TCP stream is split into read and write halves so that:
-/// - The main loop sends messages to the consumer via the write half
-/// - A spawned task listens for ACKs on the read half concurrently
-///
-/// This avoids deadlock: the broker can send messages while simultaneously
-/// receiving ACKs without blocking either direction.
+/// The consumer registers with the broker to get an `mpsc::Receiver<Message>`.
+/// The broker's dispatch loop pushes messages into this channel via round-robin.
+/// A spawned task listens for ACKs on the read half concurrently.
 async fn handle_consumer(stream: TcpStream, broker: Arc<Mutex<Broker>>) {
     let (mut reader, mut writer) = tokio::io::split(stream);
+
+    // Register this consumer with the broker and get our message channel
+    let mut rx = {
+        let mut b = broker.lock().await;
+        b.add_consumer()
+    };
 
     // Spawn a task to listen for ACKs from the consumer
     let ack_broker = broker.clone();
@@ -244,27 +247,16 @@ async fn handle_consumer(stream: TcpStream, broker: Arc<Mutex<Broker>>) {
         }
     });
 
-    // Main loop: pull messages from the queue and send them to the consumer
-    loop {
-        let msg = {
-            let mut b = broker.lock().await;
-            b.consume()
-        };
-
-        if let Some(msg) = msg {
-            let resp = serde_json::to_vec(&ServerMessage::Message {
-                id: msg.id,
-                payload: msg.payload,
-            }).unwrap();
-            if write_frame(&mut writer, &resp).await.is_err() {
-                break;
-            }
-        } else {
-            // No messages available — poll again shortly
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    // Receive messages from the broker's dispatch loop via the channel
+    while let Some(msg) = rx.recv().await {
+        let resp = serde_json::to_vec(&ServerMessage::Message {
+            id: msg.id,
+            payload: msg.payload,
+        }).unwrap();
+        if write_frame(&mut writer, &resp).await.is_err() {
+            break;
         }
 
-        // If the ACK reader task finished, the consumer disconnected
         if ack_task.is_finished() {
             break;
         }

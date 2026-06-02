@@ -166,6 +166,22 @@ pub async fn run_broker(addr: &str) {
         }
     });
 
+    // Dispatch task — pulls messages from the queue and round-robins them to consumers
+    let dispatch_broker = broker.clone();
+    tokio::spawn(async move {
+        loop {
+            let dispatched = {
+                let mut b = dispatch_broker.lock().await;
+                b.dispatch_one().await
+            };
+
+            if !dispatched {
+                // No messages or no consumers — wait briefly before checking again
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+        }
+    });
+
     // Accept loop — each connection gets its own spawned task
     loop {
         let (stream, peer) = listener.accept().await.expect("accept failed");
